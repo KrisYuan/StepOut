@@ -1,8 +1,13 @@
 package com.awesomekris.android.stepout;
 
 import android.Manifest;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Color;
 import android.location.Location;
 import android.net.Uri;
@@ -13,6 +18,7 @@ import android.support.annotation.Nullable;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.LocalBroadcastManager;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
@@ -40,6 +46,8 @@ import com.google.android.gms.fitness.request.DataSourcesRequest;
 import com.google.android.gms.fitness.request.OnDataPointListener;
 import com.google.android.gms.fitness.request.SensorRequest;
 import com.google.android.gms.fitness.result.DataSourcesResult;
+import com.google.android.gms.location.ActivityRecognition;
+import com.google.android.gms.location.DetectedActivity;
 import com.google.android.gms.location.LocationListener;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
@@ -54,9 +62,10 @@ import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.PolylineOptions;
 
+import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 
-public class MainActivity extends AppCompatActivity implements OnMapReadyCallback, GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener,LocationListener {
+public class MainActivity extends AppCompatActivity implements OnMapReadyCallback, GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener,LocationListener, ResultCallback<Status> {
 
     private final String LOG_TAG = MainActivity.class.getSimpleName();
 
@@ -65,6 +74,10 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private LocationRequest mLocationRequest;
     protected TextView mLatitudeText;
     protected TextView mLongitudeText;
+    protected ActivityDetectionBroadcastReciever mBroadcastReceiver;
+    private TextView mStatusText;
+    private Button requestUpdatesButton;
+    private Button removeUpdatesButton;
 
     //Map
     GoogleMap mMap;
@@ -101,10 +114,16 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
 
+        requestUpdatesButton = (Button) findViewById(R.id.request_activity_updates_button);
+        removeUpdatesButton = (Button) findViewById(R.id.remove_activity_updates_button);
+        mStatusText = (TextView)  findViewById(R.id.detectedActivities);
+        mBroadcastReceiver = new ActivityDetectionBroadcastReciever();
+
         mGoogleApiClient = new GoogleApiClient.Builder(this)
                 .addConnectionCallbacks(this)
                 .addOnConnectionFailedListener(this)
                 .addApi(LocationServices.API)
+                .addApi(ActivityRecognition.API)
                 .build();
         mLatitudeText = (TextView) findViewById((R.id.latitude));
         mLongitudeText = (TextView) findViewById((R.id.longitude));
@@ -183,9 +202,18 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     @Override
     protected void onResume() {
         super.onResume();
+
+        LocalBroadcastManager.getInstance(this).registerReceiver(mBroadcastReceiver, new IntentFilter(Constants.BROADCAST_ACTION));
         // This ensures that if the user denies the permissions then uses Settings to re-enable
         // them, the app will start working.
         buildFitnessClient();
+
+    }
+
+    @Override
+    protected void onPause() {
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(mBroadcastReceiver);
+        super.onPause();
     }
 
     @Override
@@ -214,7 +242,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     }
 
     @Override
-    public void onConnectionSuspended(int i) {
+    public void onConnectionSuspended(int cause) {
         Log.i(LOG_TAG,"GoogleApiClient connection has been suspended.");
     }
 
@@ -228,6 +256,39 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         Log.i(LOG_TAG, location.toString());
         mLatitudeText.setText(Double.toString(location.getLatitude()));
         mLongitudeText.setText(Double.toString(location.getLongitude()));
+    }
+
+    public void requestActivityUpdatesButtonHandler(View view){
+        if(!mGoogleApiClient.isConnected()){
+            Toast.makeText(this,getString(R.string.not_connected), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ActivityRecognition.ActivityRecognitionApi.requestActivityUpdates(
+                mGoogleApiClient,
+                Constants.DETECTION_INTERVAL_IN_MILLISECONDS,
+                getActivityDetectionPendingIntent()
+        ).setResultCallback(this);
+        requestUpdatesButton.setEnabled(false);
+        removeUpdatesButton.setEnabled(true);
+    }
+
+    public void removeActivityUpdatesButtonHandler(View view){
+        if(!mGoogleApiClient.isConnected()){
+            Toast.makeText(this,getString(R.string.not_connected), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ActivityRecognition.ActivityRecognitionApi.removeActivityUpdates(
+                mGoogleApiClient,
+                getActivityDetectionPendingIntent()
+        ).setResultCallback(this);
+        requestUpdatesButton.setEnabled(true);
+        removeUpdatesButton.setEnabled(false);
+    }
+
+    private PendingIntent getActivityDetectionPendingIntent(){
+        Intent intent = new Intent(this, DetectedActivitiesIntentService.class);
+
+        return PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
     @Override
@@ -252,6 +313,53 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         return super.onOptionsItemSelected(item);
     }
 
+    public class ActivityDetectionBroadcastReciever extends BroadcastReceiver{
+        protected final String TAG = ActivityDetectionBroadcastReciever.class.getSimpleName();
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            ArrayList<DetectedActivity> updatedActivities = intent.getParcelableArrayListExtra(Constants.ACTIVITY_EXTRA);
+
+            String strStatus = "";
+            for(DetectedActivity thisActicity : updatedActivities){
+                strStatus += getActivityString(thisActicity.getType()) + thisActicity.getConfidence()+"%\n";
+            }
+            mStatusText.setText(strStatus);
+        }
+    }
+
+    public String getActivityString(int detectedActivityType){
+        Resources resources = this.getResources();
+        switch (detectedActivityType) {
+            case DetectedActivity.IN_VEHICLE:
+                return resources.getString(R.string.in_vehicle);
+            case DetectedActivity.ON_BICYCLE:
+                return resources.getString(R.string.on_bicycle);
+            case DetectedActivity.ON_FOOT:
+                return resources.getString(R.string.on_foot);
+            case DetectedActivity.RUNNING:
+                return resources.getString(R.string.running);
+            case DetectedActivity.STILL:
+                return resources.getString(R.string.still);
+            case DetectedActivity.TILTING:
+                return resources.getString(R.string.tilting);
+            case DetectedActivity.UNKNOWN:
+                return resources.getString(R.string.unknown);
+            case DetectedActivity.WALKING:
+                return resources.getString(R.string.walking);
+            default:
+                return resources.getString(R.string.unidentifiable_activity);
+        }
+
+    }
+
+    public void onResult(Status status){
+        if(status.isSuccess()){
+            Log.e(LOG_TAG, "Successfully added activity detection.");
+        } else {
+            Log.e(LOG_TAG, "Error adding or removing activity detection." + status.getStatusMessage());
+        }
+    }
     /**
      *  Build a {@link GoogleApiClient} that will authenticate the user and allow the application
      *  to connect to Fitness APIs. The scopes included should match the scopes your app needs
