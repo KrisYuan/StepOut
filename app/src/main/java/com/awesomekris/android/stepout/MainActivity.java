@@ -3,10 +3,13 @@ package com.awesomekris.android.stepout;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.location.Location;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
@@ -16,6 +19,9 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.Button;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.Scopes;
@@ -34,18 +40,57 @@ import com.google.android.gms.fitness.request.DataSourcesRequest;
 import com.google.android.gms.fitness.request.OnDataPointListener;
 import com.google.android.gms.fitness.request.SensorRequest;
 import com.google.android.gms.fitness.result.DataSourcesResult;
+import com.google.android.gms.location.LocationListener;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.maps.CameraUpdateFactory;
+import com.google.android.gms.maps.GoogleMap;
+import com.google.android.gms.maps.MapFragment;
+import com.google.android.gms.maps.OnMapReadyCallback;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
+import com.google.android.gms.maps.model.CameraPosition;
+import com.google.android.gms.maps.model.CircleOptions;
+import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.MarkerOptions;
+import com.google.android.gms.maps.model.PolylineOptions;
 
 import java.util.concurrent.TimeUnit;
 
-public class MainActivity extends AppCompatActivity {
-    private static final String LOG_TAG = MainActivity.class.getSimpleName();
-    private GoogleApiClient mFitnessClient = null;
+public class MainActivity extends AppCompatActivity implements OnMapReadyCallback, GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener,LocationListener {
+
+    private final String LOG_TAG = MainActivity.class.getSimpleName();
+
+    //Location
+    private GoogleApiClient mGoogleApiClient;
+    private LocationRequest mLocationRequest;
+    protected TextView mLatitudeText;
+    protected TextView mLongitudeText;
+
+    //Map
+    GoogleMap mMap;
+    boolean mapReady = false;
+
+    LatLng renton = new LatLng(47.489805,-122.120502);
+    LatLng kirkland = new LatLng(47.7301986, -122.1768858);
+    LatLng everett = new LatLng(47.978748, -122.202001);
+    LatLng lynmwood = new LatLng(47.8195333, -122.32288);
+
+    MarkerOptions reton;
+
+    static final CameraPosition SEATTLE = CameraPosition.builder()
+            .target(new LatLng(47.6204,-122.2491))
+            .zoom(10)
+            .bearing(0)
+            .tilt(45)
+            .build();
+
+    private GoogleApiClient mClient = null;
     private static final int REQUEST_PERMISSIONS_REQUEST_CODE = 34;
 
     // [START mListener_variable_reference]
     // Need to hold a reference to this listener, as it's passed into the "unregister"
     // method in order to stop all sensors from sending data to this listener.
-    private OnDataPointListener mFitnessListener;
+    private OnDataPointListener mListener;
     // [END mListener_variable_reference]
 
 
@@ -55,6 +100,43 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
+
+        mGoogleApiClient = new GoogleApiClient.Builder(this)
+                .addConnectionCallbacks(this)
+                .addOnConnectionFailedListener(this)
+                .addApi(LocationServices.API)
+                .build();
+        mLatitudeText = (TextView) findViewById((R.id.latitude));
+        mLongitudeText = (TextView) findViewById((R.id.longitude));
+
+
+        //Map
+        reton = new MarkerOptions()
+                .position(new LatLng(47.489805,-122.120502))
+                .title("Renton")
+                .icon(BitmapDescriptorFactory.fromResource(R.drawable.ic_launcher));
+
+        Button walkMap = (Button)findViewById(R.id.walking);
+        Button runMap = (Button)findViewById(R.id.running);
+
+        walkMap.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if(mapReady)
+                    mMap.setMapType(GoogleMap.MAP_TYPE_NORMAL);
+            }
+        });
+
+        runMap.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if(mapReady)
+                    mMap.setMapType(GoogleMap.MAP_TYPE_HYBRID);
+            }
+        });
+
+        MapFragment mapFragment = (MapFragment)getFragmentManager().findFragmentById(R.id.map);
+        mapFragment.getMapAsync(this);
 
         // When permissions are revoked the app is restarted so onCreate is sufficient to check for
         // permissions core to the Activity's functionality.
@@ -73,11 +155,79 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onMapReady(GoogleMap googleMap) {
+        mapReady = true;
+        mMap = googleMap;
+        mMap.addMarker(reton);
+        mMap.moveCamera(CameraUpdateFactory.newCameraPosition(SEATTLE));
+
+        googleMap.addPolyline(new PolylineOptions().geodesic(true)
+        .add(renton)
+        .add(kirkland)
+        .add(everett)
+        .add(lynmwood));
+
+        mMap.addCircle(new CircleOptions()
+        .center(renton)
+        .radius(5000)
+        .strokeColor(Color.GREEN)
+        .fillColor(Color.argb(64,0,255,0)));
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        mGoogleApiClient.connect();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         // This ensures that if the user denies the permissions then uses Settings to re-enable
         // them, the app will start working.
         buildFitnessClient();
+    }
+
+    @Override
+    protected void onStop() {
+        if(mGoogleApiClient.isConnected()) {
+            mGoogleApiClient.disconnect();
+        }
+        super.onStop();
+    }
+
+    @Override
+    public void onConnected(@Nullable Bundle bundle) {
+        mLocationRequest = LocationRequest.create();
+        mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        //Update location every 5 second
+        mLocationRequest.setInterval(1000);
+
+        PackageManager pm = getPackageManager();
+        boolean isPermitted = (PackageManager.PERMISSION_GRANTED == pm.checkPermission("android.permission.ACCESS_FINE_LOCATION", "com.awesomekris.android.stepout"));
+        if(isPermitted) {
+            LocationServices.FusedLocationApi.requestLocationUpdates(mGoogleApiClient,mLocationRequest,MainActivity.this);
+        }else {
+            Toast.makeText(getApplication(),"Permission Denied!",Toast.LENGTH_LONG).show();
+        }
+
+    }
+
+    @Override
+    public void onConnectionSuspended(int i) {
+        Log.i(LOG_TAG,"GoogleApiClient connection has been suspended.");
+    }
+
+    @Override
+    public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+        Log.i(LOG_TAG,"GoogleApiClient connection has failed.");
+    }
+
+    @Override
+    public void onLocationChanged(Location location) {
+        Log.i(LOG_TAG, location.toString());
+        mLatitudeText.setText(Double.toString(location.getLatitude()));
+        mLongitudeText.setText(Double.toString(location.getLongitude()));
     }
 
     @Override
@@ -111,8 +261,8 @@ public class MainActivity extends AppCompatActivity {
      *  multiple accounts on the device and needing to specify which account to use, etc.
      */
     private void buildFitnessClient() {
-        if (mFitnessClient == null && checkPermissions()) {
-            mFitnessClient = new GoogleApiClient.Builder(this)
+        if (mClient == null && checkPermissions()) {
+            mClient = new GoogleApiClient.Builder(this)
                     .addApi(Fitness.SENSORS_API)
                     .addScope(new Scope(Scopes.FITNESS_LOCATION_READ))
                     .addConnectionCallbacks(
@@ -167,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
     private void findFitnessDataSources() {
         // [START find_data_sources]
         // Note: Fitness.SensorsApi.findDataSources() requires the ACCESS_FINE_LOCATION permission.
-        Fitness.SensorsApi.findDataSources(mFitnessClient, new DataSourcesRequest.Builder()
+        Fitness.SensorsApi.findDataSources(mClient, new DataSourcesRequest.Builder()
                 // At least one datatype must be specified.
                 .setDataTypes(DataType.TYPE_LOCATION_SAMPLE)
                 // Can specify whether data type is raw or derived.
@@ -183,7 +333,7 @@ public class MainActivity extends AppCompatActivity {
 
                             //Let's register a listener to receive Activity data!
                             if (dataSource.getDataType().equals(DataType.TYPE_LOCATION_SAMPLE)
-                                    && mFitnessListener == null) {
+                                    && mListener == null) {
                                 Log.i(LOG_TAG, "Data source for LOCATION_SAMPLE found!  Registering.");
                                 registerFitnessDataListener(dataSource,
                                         DataType.TYPE_LOCATION_SAMPLE);
@@ -200,7 +350,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private void registerFitnessDataListener(DataSource dataSource, DataType dataType) {
         // [START register_data_listener]
-        mFitnessListener = new OnDataPointListener() {
+        mListener = new OnDataPointListener() {
             @Override
             public void onDataPoint(DataPoint dataPoint) {
                 for (Field field : dataPoint.getDataType().getFields()) {
@@ -212,13 +362,13 @@ public class MainActivity extends AppCompatActivity {
         };
 
         Fitness.SensorsApi.add(
-                mFitnessClient,
+                mClient,
                 new SensorRequest.Builder()
                         .setDataSource(dataSource) // Optional but recommended for custom data sets.
                         .setDataType(dataType) // Can't be omitted.
                         .setSamplingRate(10, TimeUnit.SECONDS)
                         .build(),
-                mFitnessListener)
+                mListener)
                 .setResultCallback(new ResultCallback<Status>() {
                     @Override
                     public void onResult(Status status) {
@@ -236,7 +386,7 @@ public class MainActivity extends AppCompatActivity {
      * Unregister the listener with the Sensors API.
      */
     private void unregisterFitnessDataListener() {
-        if (mFitnessListener == null) {
+        if (mListener == null) {
             // This code only activates one listener at a time.  If there's no listener, there's
             // nothing to unregister.
             return;
@@ -247,8 +397,8 @@ public class MainActivity extends AppCompatActivity {
         // even if called from within onStop, but a callback can still be added in order to
         // inspect the results.
         Fitness.SensorsApi.remove(
-                mFitnessClient,
-                mFitnessListener)
+                mClient,
+                mListener)
                 .setResultCallback(new ResultCallback<Status>() {
                     @Override
                     public void onResult(Status status) {
